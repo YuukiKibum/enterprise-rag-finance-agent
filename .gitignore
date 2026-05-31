@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+.venv/
+
+# Env vars
+.env
+
+# Streamlit
+.streamlit/
+
+# Chroma DB
+chroma/
+chroma_db/
+
+# SQLite and ChromaDB
+*.sqlite3
+
+# SQLite checkpoints
+*.db
+
+# Lock files
+*.lock
+
+# Python version file
+.python-version
+
+# Local env files
+src/.env
+
+# Python package metadata
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
