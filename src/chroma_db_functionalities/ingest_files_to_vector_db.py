@@ -2,54 +2,118 @@ from . import get_vector_store_collection
 from . import load_files
 from . import smart_chunking
 from . import create_embeddings
-import os                      # Gives access to file paths, folder listing, etc.
-import uuid                    # Used to generate unique IDs for each chunk
-from dotenv import load_dotenv # Loads environment variables from .env file
 
-load_dotenv() 
+import os
+import hashlib
+from pathlib import Path
+from dotenv import load_dotenv
 
-def ingest_document(path: str, doc_id: str | None = None):
+load_dotenv()
+
+SUPPORTED_EXTENSIONS = (".docx", ".pdf", ".xlsx", ".xls")
+
+
+def generate_doc_id(path: str) -> str:
+    """
+    Creates a stable document ID based on the file name.
+    This avoids using temporary upload folder paths as doc_id.
+    """
+    file_name = os.path.basename(path)
+    return file_name.lower().strip()
+
+
+def calculate_file_hash(path: str) -> str:
+    """
+    Creates a hash of the file content.
+    Useful for tracking whether the same file content was uploaded again.
+    """
+    sha256 = hashlib.sha256()
+
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            sha256.update(block)
+
+    return sha256.hexdigest()
+
+
+def ingest_document(path: str, doc_id: str | None = None) -> dict:
     """
     Ingests ONE document into ChromaDB.
+
     Steps:
     1. Load text
-    2. Smart chunking
-    3. Embedding
-    4. Add metadata
-    5. Store in Chroma
+    2. Chunk text
+    3. Create embeddings
+    4. Delete old chunks for same doc_id
+    5. Store fresh chunks in ChromaDB
     """
+
+    path_obj = Path(path)
+    ext = path_obj.suffix.lower()
+
+    if ext not in SUPPORTED_EXTENSIONS:
+        return {
+            "status": "skipped",
+            "file_name": path_obj.name,
+            "reason": f"Unsupported file type: {ext}"
+        }
+
     collection = get_vector_store_collection.get_vector_store_collection()
 
-    # If no doc_id provided, use the file path as the document ID
-    doc_id = doc_id or path
+    doc_id = doc_id or generate_doc_id(path)
+    file_name = path_obj.name
+    file_hash = calculate_file_hash(path)
 
-    # 1) Load raw text from file
+    # 1) Load raw text
     full_text = load_files.load_file(path)
 
-    # 2) Smart chunking (automatic chunking + overlap)
+    if not full_text or not full_text.strip():
+        return {
+            "status": "skipped",
+            "file_name": file_name,
+            "reason": "No readable text found"
+        }
+
+    # 2) Chunk text
     chunks = smart_chunking.chunk_text_smart(full_text)
 
     if not chunks:
-        print(f"No content found in {path}")
-        return
+        return {
+            "status": "skipped",
+            "file_name": file_name,
+            "reason": "No chunks created"
+        }
 
-    # 3) Embed all chunks
+    # 3) Create embeddings
     embeddings = create_embeddings.embed_texts(chunks)
 
-    # 4) Create unique IDs + metadata for each chunk
-    ids = [str(uuid.uuid4()) for _ in chunks]
+    # 4) Delete existing chunks for this same document
+    # This prevents duplicate chunks when the same file is uploaded again.
+    try:
+        collection.delete(where={"doc_id": doc_id})
+    except Exception:
+        pass
+
+    # 5) Create stable chunk IDs
+    ids = [
+        f"{doc_id}__chunk_{i}"
+        for i in range(len(chunks))
+    ]
 
     metadatas = [
         {
-            "doc_id": doc_id,                 # Logical document ID
-            "file_name": os.path.basename(path),
-            "chunk_index": i,                 # Which chunk number this is
-            "total_chunks": len(chunks),      # Total chunks in this document
+            "doc_id": doc_id,
+            "file_name": file_name,
+            "file_extension": ext,
+            "file_hash": file_hash,
+            "chunk_index": i,
+            "total_chunks": len(chunks),
+            "source_path": str(path_obj),
         }
         for i in range(len(chunks))
     ]
 
-    # 5) Store everything in ChromaDB
+    # 6) Store in ChromaDB
     collection.add(
         ids=ids,
         documents=chunks,
@@ -57,36 +121,60 @@ def ingest_document(path: str, doc_id: str | None = None):
         embeddings=embeddings,
     )
 
-    print(f"Ingested {len(chunks)} chunks from {path} (doc_id={doc_id})")
+    return {
+        "status": "success",
+        "file_name": file_name,
+        "doc_id": doc_id,
+        "chunks": len(chunks),
+        "file_hash": file_hash,
+    }
 
 
-# ---------------------------------------------------------
-#         INGEST ALL DOCUMENTS IN A FOLDER (NEW)
-# ---------------------------------------------------------
-
-def ingest_folder(folder_path: str):
+def ingest_folder(folder_path: str) -> dict:
     """
-    Scans a folder and ingests ALL supported documents inside it.
+    Recursively scans a folder and ingests all supported files.
+    This works for folders with subfolders.
     """
-    supported_extensions = (".docx", ".pdf")
 
-    for file_name in os.listdir(folder_path):
-        full_path = os.path.join(folder_path, file_name)
+    folder = Path(folder_path)
 
-        # Skip folders
-        if os.path.isdir(full_path):
+    results = {
+        "total_found": 0,
+        "successful": [],
+        "skipped": [],
+        "failed": [],
+    }
+
+    for path in folder.rglob("*"):
+        if path.is_dir():
             continue
 
-        # Only process supported file types
-        if file_name.lower().endswith(supported_extensions):
-            print(f"\nProcessing: {file_name}")
-            ingest_document(full_path)
-        else:
-            print(f"Skipping unsupported file: {file_name}")
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            results["skipped"].append({
+                "file_name": path.name,
+                "reason": f"Unsupported file type: {path.suffix}"
+            })
+            continue
 
-# ---------------------------------------------------------
-#                 EXAMPLE USAGE
-# ---------------------------------------------------------
+        results["total_found"] += 1
+
+        try:
+            result = ingest_document(str(path))
+
+            if result["status"] == "success":
+                results["successful"].append(result)
+            else:
+                results["skipped"].append(result)
+
+        except Exception as e:
+            results["failed"].append({
+                "file_name": path.name,
+                "reason": str(e)
+            })
+
+    return results
+
 
 if __name__ == "__main__":
-    ingest_folder("serco_files")   # Ingest all .docx files in the folder
+    result = ingest_folder("serco_files")
+    print(result)

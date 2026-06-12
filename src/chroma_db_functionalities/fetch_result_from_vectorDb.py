@@ -1,7 +1,7 @@
 from . import get_vector_store_collection
 from . import create_embeddings
 
-def retrieve_context(query: str, k: int = 5):
+def retrieve_context(query: str, k: int = 200):
     collection = get_vector_store_collection.get_vector_store_collection()
     [query_embedding] = create_embeddings.embed_texts([query])
 

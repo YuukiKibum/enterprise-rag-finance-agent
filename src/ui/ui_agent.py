@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from common import config
 from chroma_db_functionalities.fetch_result_from_vectorDb import retrieve_context
+from chroma_db_functionalities.vector_db_inspection import format_vector_db_summary
 
 load_dotenv()
 
@@ -30,6 +31,18 @@ def fetchDataFromSercoKnowBase(query: str):
 
     return context
 
+@tool
+def getSercoKnowledgeBaseFileInventory(query: str = ""):
+    """
+    Gets the current ChromaDB knowledge base inventory.
+    Use this tool when the user asks:
+    - how many files are uploaded
+    - what files are stored
+    - file names in ChromaDB
+    - number of chunks
+    - knowledge base contents
+    """
+    return format_vector_db_summary()
 
 # ---------------------------------------------------------
 # LLM + AGENT
@@ -62,9 +75,11 @@ You must behave like a senior Serco finance professional:
 * Focused on accuracy, compliance, and business impact
 * Capable of handling sensitive financial and operational information professionally
 
-IMPORTANT KNOWLEDGE SOURCE RULES:
+IMPORTANT STRICT KNOWLEDGE SOURCE RULES:
 
-* You MUST ALWAYS use the tool `fetchDataFromSercoKnowBase` to retrieve relevant information from the Serco knowledge base before answering any user query
+* For document-content questions, you MUST use `fetchDataFromSercoKnowBase` before answering.
+* For knowledge base inventory questions, you MUST use `getSercoKnowledgeBaseFileInventory` before answering.
+* Do not answer file count, file name, or ChromaDB inventory questions from memory.
 * The tool returns contextual information retrieved from Serco’s internal Vector Database (RAG context)
 * ALL responses must be based STRICTLY on the information returned by the `fetchDataFromSercoKnowBase` tool
 * Do NOT generate assumptions, hallucinations, or unsupported financial conclusions
@@ -74,13 +89,31 @@ IMPORTANT KNOWLEDGE SOURCE RULES:
 * Always prioritize retrieved Serco data over general knowledge
 * Maintain confidentiality and professionalism at all times
 
-TOOL AVAILABLE:
+TOOLS AVAILABLE:
 
-Tool Name:
-fetchDataFromSercoKnowBase
+1. fetchDataFromSercoKnowBase
 
 Purpose:
-Fetches relevant contextual information from the Serco Vector Database knowledge base using semantic search.
+Fetches relevant document chunks from the Serco Vector Database knowledge base using semantic search.
+
+Use this tool when the user asks business, finance, FP&A, bid, M&A, invoice, reporting, or document-content questions.
+
+2. getSercoKnowledgeBaseFileInventory
+
+Purpose:
+Reads the current ChromaDB inventory and returns:
+- number of files stored
+- file names
+- number of chunks stored
+- chunk count per file
+
+Use this tool when the user asks:
+- how many files are uploaded
+- what files are in ChromaDB
+- what documents are in the knowledge base
+- list the file names
+- how many chunks are stored
+- whether the knowledge base has files
 
 Tool Input:
 
@@ -106,7 +139,7 @@ Your objective is to function as a trusted AI finance and strategy assistant for
 """
 agent = create_agent(
     llm,
-    tools=[fetchDataFromSercoKnowBase],
+    tools=[fetchDataFromSercoKnowBase, getSercoKnowledgeBaseFileInventory],
     system_prompt=system_prompt,
     checkpointer=InMemorySaver()
 )
